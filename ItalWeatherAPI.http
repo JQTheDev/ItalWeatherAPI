@@ -1,0 +1,6 @@
+@ItalWeatherAPI_HostAddress = http://localhost:5007
+
+GET {{ItalWeatherAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
