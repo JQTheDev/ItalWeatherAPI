@@ -1,4 +1,7 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using ItalWeatherAPI.Models;
+using ItalWeatherAPI.Models.DTOs;
+using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace ItalWeatherAPI.Controllers
 {
@@ -6,41 +9,95 @@ namespace ItalWeatherAPI.Controllers
     [ApiController]
     public class WeatherController : ControllerBase
     {
-        //forecast.json added in prefix as both endpoints can be achieved with this param.
         private const string BaseUrl = "https://api.weatherapi.com/v1/forecast.json?";
-        private const string apiKey = "c28da1f128494a70bee234532261403";
+        private readonly string _apiKey;
+        private readonly HttpClient _httpClient;
 
-        // GET: api/<WeatherController>
+        public WeatherController(HttpClient httpClient, IConfiguration config)
+        {
+            _httpClient = httpClient;
+            _apiKey = config["WeatherApi:ApiKey"]!;
+        }
+
         [HttpGet]
-        public async Task<ActionResult<string>> GetTodaysWeather()
+        public async Task<ActionResult<CurrentWeatherDto>> GetTodaysWeather()
         {
-            HttpClient client = new HttpClient();
+            var response = await _httpClient.GetAsync($"{BaseUrl}key={_apiKey}&q=London");
+            if (response.IsSuccessStatusCode)
+            {
+                string json = await response.Content.ReadAsStringAsync();
+                var weatherApiResponse = JsonSerializer.Deserialize<WeatherApiResponseModel>(
+                    json, 
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    }); //explicitly defined otherwise swagger test returns null values.
 
-            var requestResponse = await client.GetAsync($"{BaseUrl}key={apiKey}&q=Paris");
-            requestResponse.EnsureSuccessStatusCode();
+                var currentDay = weatherApiResponse?.Forecast?.ForecastDay?[0];
+                //null check on time for warning but should be impossible?
+                var remainingHours = currentDay?.Hour?.Where(x => x.Time != null && DateTime.Parse(x.Time) > DateTime.Now);
+                var restOfDay = remainingHours?.Select(x => new HourlyForecast
+                {
+                    Time = x.Time,
+                    Condition = x.Condition?.Text ?? "",
+                    TemperatureC = x.TempC,
+                    WindMph = x.WindMph,
+                    ChanceOfRain = x.ChanceOfRain
+                }).ToList();
 
-            var responseAsJson = await requestResponse.Content.ReadAsStringAsync();
+                var todaysWeather = new CurrentWeatherDto
+                {
+                    Date = currentDay?.Date,
+                    SunriseTime = currentDay?.Astro?.Sunrise,
+                    SunsetTime = currentDay?.Astro?.Sunset,
+                    HourlyForecasts = restOfDay ?? new List<HourlyForecast>(),
+                };
 
-            return responseAsJson;
+                return todaysWeather;
+            }
+            return StatusCode((int)response.StatusCode, "Weather service unavailable");
         }
 
-        // GET api/<WeatherController>/5
-        [HttpGet("{days}")]
-        public async Task<ActionResult<string>> Get(int noOfDays)
+        [HttpGet("days/3")]
+        public async Task<ActionResult<IEnumerable<WeatherForecastDto>>> GetThreeDayForecast()
         {
-            HttpClient client = new HttpClient();
 
-            var requestResponse = await client.GetAsync($"{BaseUrl}key={apiKey}&q=Paris&days={noOfDays}");
-            requestResponse.EnsureSuccessStatusCode();
+            var response = await _httpClient.GetAsync($"{BaseUrl}key={_apiKey}&q=London&days=3");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var weatherApiResponse = JsonSerializer.Deserialize<WeatherApiResponseModel>(
+                                    json,
+                                    new JsonSerializerOptions
+                                    {
+                                        PropertyNameCaseInsensitive = true
+                                    });
 
-            var responseAsJson = await requestResponse.Content.ReadAsStringAsync();
+                var forecastDays = weatherApiResponse?.Forecast?.ForecastDay;
+                //reduces need for several null safety operators in DTO; more readable
+                if (forecastDays == null || forecastDays.Count < 3) return StatusCode(500, "Weather service unavailable"); 
 
-            return responseAsJson;
+                List<WeatherForecastDto> forecastList = new();
+
+                for (int i = 0; i < 3; i++)
+                {
+                    WeatherForecastDto dailyForecast = new WeatherForecastDto
+                    {
+                        AvgTemp = forecastDays[i].Day?.AvgTempC ?? 0,
+                        ChanceOfRain = forecastDays[i].Day?.DailyChanceOfRain ?? 0,
+                        Date = forecastDays[i].Date,
+                        Condition = forecastDays[i].Day?.Condition?.Text
+                    };
+
+                    forecastList.Add(dailyForecast);
+                }
+
+                return forecastList;
+            }
+            return StatusCode((int)response.StatusCode, "Weather service unavailable");
         }
-
     }
+
+
 }
 
-//include date, time of sunrise, time of sunset, and weather forecast
-//for the remaining hours (condition, chance of rain, temperature
-//centigrade, wind (mph)).
